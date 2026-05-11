@@ -1,0 +1,40 @@
+{
+  "name": "fluent-future",
+  "version": "1.0.0",
+  "description": "fluent future api",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "node --import tsx --test ./tests/test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/M2K-5F/fluent-future.git"
+  },
+  "keywords": [
+    "typescript",
+    "error-handling"
+  ],
+  "author": "M2K-5F",
+  "license": "MIT",
+  "homepage": "https://github.com/M2K-5F/fluent-future",
+  "bugs": {
+    "url": "https://github.com/M2K-5F/fluent-future/issues"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0"
+  }
+}
