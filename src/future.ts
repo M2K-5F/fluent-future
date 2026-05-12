@@ -333,17 +333,25 @@ export class Future<T, E = Error> {
      * ```
      */
     bind<U extends Record<string, any>>(
-        fields: { [K in keyof U]: U[K] | Future<U[K], E> | ((ctx: T) => Future<U[K], E>) }
-    ): T extends Record<string, any> ? Future<T & U, E> : Future<U, E> {
-        
-
+        fields: { [K in keyof U]: U[K] | Future<U[K], E> | ((ctx: T) => U[K]) | ((ctx: T) => Future<U[K], E>) }
+    ): T extends Record<string, any> ? Future<T & { [K in keyof U]: Awaited<U[K]> }, E> : Future<{ [K in keyof U]: Awaited<U[K]> }, E> {
+    
         return this.andThen(ctx => {
             const keys = Object.keys(fields) as (keyof U)[]
             const futures = keys.map(k => {
                 const field = fields[k]
-                if (field instanceof Future) return field as Future<U[ keyof U], E>
-                if (typeof field === 'function') return field(ctx) as Future<U[keyof U], E>
-                return Resolve(field) as Future<U[keyof U], E>
+                if (Future.isFuture(field)) return field as Future<U[ keyof U], E>
+
+                if (typeof field === 'function') {
+                    const result = field(ctx)
+                    if (Future.isFuture(result)) {
+                        return result as Future<U[keyof U], E>    
+                    }
+                    else {
+                        return Future.of(result) as Future<U[keyof U], E>
+                    }
+                }
+                return Future.of(field) as Future<U[keyof U], E>
             })
             
             return Future.all(futures).map(values => {
@@ -455,6 +463,9 @@ export class Future<T, E = Error> {
             })
     }    
 
+    static isFuture(obj: any): obj is Future<any, any> {
+        return obj && obj.__isFuture === true;
+    }
 
     /**
      * Executes a finalizer regardless of success or failure.

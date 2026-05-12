@@ -397,4 +397,162 @@ describe('Future static methods', () => {
             assert.strictEqual(cleanupCalled, true);
         });
     });
+
+    describe('simple values without Future wrapper', () => {
+        it('should bind plain object to Future', async () => {
+            const result = await Bind({
+                a: 1,
+                b: 'hello',
+                c: true
+            }).unwrap()
+
+            assert.deepStrictEqual(result, { a: 1, b: 'hello', c: true })
+        })
+
+        it('should mix plain values and Futures', async () => {
+            const result = await Bind({
+                a: Resolve(1),
+                b: 'hello',
+                c: Resolve(true)
+            }).unwrap()
+
+            assert.deepStrictEqual(result, { a: 1, b: 'hello', c: true })
+        })
+    })
+
+    describe('functions returning direct values (no Future wrapper)', () => {
+        it('should bind function that returns plain value', async () => {
+            const ctx = { multiplier: 5 }
+            const result = await Resolve(ctx)
+                .bind({
+                    doubled: ({ multiplier }) => multiplier * 2
+                })
+                .unwrap()
+
+            assert.deepStrictEqual(result, { multiplier: 5, doubled: 10 })
+        })
+
+        it('should bind multiple functions returning plain values', async () => {
+            const result = await Resolve({ x: 10, y: 5 })
+                .bind({
+                    sum: ({ x, y }) => x + y,
+                    diff: ({ x, y }) => x - y,
+                    mul: ({ x, y }) => x * y
+                })
+
+            assert.deepStrictEqual(result, { x: 10, y: 5, sum: 15, diff: 5, mul: 50 })
+        })
+
+        it('should chain functions that depend on previous bind results', async () => {
+            const result = await Resolve({ userId: 1 })
+                .bind({
+                    userName: () => 'Alice'
+                })
+                .bind({
+                    greeting: ({ userName }) => `Hello, ${userName}!`
+                })
+
+            assert.deepStrictEqual(result, { userId: 1, userName: 'Alice', greeting: 'Hello, Alice!' })
+        })
+    })
+
+    describe('mixed: functions returning Future and direct values', () => {
+        it('should mix async and sync functions', async () => {
+            const result = await Resolve({ userId: 1 })
+                .bind({
+                    userName: () => Resolve('Alice'),
+                    timestamp: () => Date.now()           
+                })
+
+            assert.strictEqual(result.userName, 'Alice')
+            assert.strictEqual(typeof result.timestamp, 'number')
+        })
+
+        it('should handle async functions with ctx', async () => {
+            const result = await Resolve({ userId: 1 })
+                .bind({
+                    posts: ({ userId }) => Resolve([`post_${userId}_1`]),
+                })
+                .bind({
+                    postCount: ({ posts }) => posts.length
+                })
+
+            assert.deepStrictEqual(result.posts, ['post_1_1'])
+            assert.strictEqual(result.postCount, 1)
+        })
+    })
+
+    describe('edge cases', () => {
+        it('should handle empty bind', async () => {
+            const future = Resolve({ a: 1 })
+            const result = await future.bind({}).unwrap()
+            assert.deepStrictEqual(result, { a: 1 })
+        })
+
+        it('should handle null and undefined', async () => {
+            const result = await Resolve({})
+                .bind({
+                    n: null,
+                    u: undefined
+                })
+
+            assert.strictEqual(result.n, null)
+            assert.strictEqual(result.u, undefined)
+        })
+
+        it('should handle functions that return null/undefined', async () => {
+            const result = await Resolve({})
+                .bind({
+                    n: () => null,
+                    u: () => undefined
+                })
+
+            assert.strictEqual(result.n, null)
+            assert.strictEqual(result.u, undefined)
+        })
+
+        it('should handle array values', async () => {
+            const result = await Resolve({})
+                .bind({
+                    arr: [1, 2, 3],
+                    arrFromFn: () => [4, 5, 6]
+                })
+
+            assert.deepStrictEqual(result.arr, [1, 2, 3])
+            assert.deepStrictEqual(result.arrFromFn, [4, 5, 6])
+        })
+    })
+
+    describe('error handling', () => {
+        it('should stop bind chain on Future error', async () => {
+            const error = new Error('Failed')
+            const future = Resolve({ userId: 1 })
+                .bind({
+                    userName: () => Reject(error)
+                })
+                .bind({
+                    extra: () => 'never reaches'
+                })
+
+            assert.strictEqual(await future.isErr(), true)
+            await assert.rejects(future.unwrap(), /Failed/)
+        })
+
+        it('should not execute subsequent binds after error', async () => {
+            let executed = false
+            const future = Resolve({ userId: 1 })
+                .bind({
+                    userName: () => Reject(new Error('fail'))
+                })
+                .bind({
+                    extra: () => {
+                        executed = true
+                        return 'value'
+                    }
+                })
+
+            await future.catch(() => {})
+            assert.strictEqual(executed, false)
+        })
+    })
 });
