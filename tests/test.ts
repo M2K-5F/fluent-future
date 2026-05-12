@@ -1,7 +1,7 @@
 // future.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { Future, Resolve, Reject } from '../src/index';
+import { Future, Resolve, Reject, Begin, Bind } from '../src/index';
 
 describe('Future static methods', () => {
     describe('Future.of', () => {
@@ -93,13 +93,13 @@ describe('Future static methods', () => {
 
     describe('Future.Begin', () => {
         it('should create void Future', async () => {
-            const future = Future.Begin();
+            const future = Begin();
             assert.strictEqual(await future.unwrap(), undefined);
             assert.strictEqual(await future.isOk(), true);
         });
 
         it('should allow chaining', async () => {
-            const result = await Future.Begin()
+            const result = await Begin()
                 .andThen(() => Future.of(1))
                 .andThen(x => Future.of(x + 2))
                 .unwrap();
@@ -234,6 +234,167 @@ describe('Future static methods', () => {
             
             const result = await Future.any(futures).unwrap();
             assert.strictEqual(result, 42);
+        });
+    });
+
+    describe('Begin', () => {
+        it('should create void Future', async () => {
+            const future = Begin();
+            assert.strictEqual(await future.unwrap(), undefined);
+        });
+
+        it('should support type parameters for errors', async () => {
+            class ApiError extends Error {}
+            const future = Begin<ApiError>()
+                .andThen(() => Reject(new ApiError('fail')));
+            
+            assert.strictEqual(await future.isErr(), true);
+            await assert.rejects(future, (err: ApiError) => {
+                assert.strictEqual(err instanceof ApiError, true);
+                return true;
+            });
+        });
+
+        it('should allow chaining', async () => {
+            const result = await Begin()
+                .andThen(() => Resolve(1))
+                .andThen(x => Resolve(x + 2))
+                .unwrap();
+            
+            assert.strictEqual(result, 3);
+        });
+    });
+
+    describe('Bind', () => {
+        it('should combine multiple Futures into object', async () => {
+            const result = await Bind({
+                a: Resolve(1),
+                b: Resolve(2),
+                c: Resolve(3)
+            }).unwrap();
+            
+            assert.deepStrictEqual(result, { a: 1, b: 2, c: 3 });
+        });
+
+        it('should fail if any Future fails', async () => {
+            const bind = Bind({
+                a: Resolve(1),
+                b: Reject(new Error('b failed')),
+                c: Resolve(3)
+            });
+            
+            assert.strictEqual(await bind.isErr(), true);
+            await assert.rejects(bind.unwrap(), /b failed/);
+        });
+
+        it('should handle empty object', async () => {
+            const result = await Bind({})
+            assert.deepStrictEqual(result, {});
+        });
+
+        it('should preserve types through chain', async () => {
+            const result = await Bind({
+                user: Resolve({ id: 1, name: 'Alice' }),
+            })
+            .bind({
+                greeting: (ctx) => Resolve(`Hello, ${ctx.user.name}!`)
+            })
+            
+            assert.strictEqual(result.greeting, 'Hello, Alice!');
+        });
+    });
+
+    describe('Future.prototype.bind', () => {
+        it('should extend context with new fields', async () => {
+            const result = await Resolve({ userId: 1 })
+                .bind({
+                    userName: (ctx) => Resolve(`User_${ctx.userId}`),
+                    timestamp: Resolve(Date.now()),
+                })
+            
+            assert.strictEqual(result.userId, 1);
+            assert.strictEqual(result.userName, 'User_1');
+            assert.ok(result.timestamp > 0);
+        });
+
+        it('should handle dependent fields', async () => {
+            const result = await Resolve({ multiplier: 2 })
+                .bind({
+                    a: (ctx) => Resolve(10 * ctx.multiplier),
+                    b: (ctx) => Resolve(20 * ctx.multiplier)
+                })
+                .bind({
+                    sum: (ctx) => Resolve(ctx.a + ctx.b)
+                })
+            
+            assert.strictEqual(result.sum, 60); // (20 + 40)
+        });
+
+        it('should fail if any bound Future fails', async () => {
+            const future = Resolve({ id: 1 })
+                .bind({
+                    user: () => Reject(new Error('Failed to load user')),
+                    posts: () => Resolve([])
+                });
+            
+            assert.strictEqual(await future.isErr(), true);
+            await assert.rejects(future, /Failed to load user/);
+        });
+
+        it('should handle async transformations', async () => {
+            const result = await Resolve(5)
+                .bind({
+                    doubled: (x) => Resolve(x * 2),
+                    tripled: (x) => Resolve(x * 3)
+                })
+                .bind({
+                    total: (ctx) => Resolve(ctx.doubled + ctx.tripled)
+                })
+            
+            assert.strictEqual(result.total, 25); // (10 + 15)
+        });
+
+        it('should work with zero fields', async () => {
+            const result = await Resolve(42)
+                .bind({})
+            
+            assert.deepEqual(result, {});
+        });
+    });
+
+    describe('Chaining Bind with bind', () => {
+        it('should combine Bind and bind seamlessly', async () => {
+            const result = await Bind({
+                initial: Resolve(100)
+            })
+            .bind({
+                doubled: (ctx) => Resolve(ctx.initial * 2),
+                tripled: (ctx) => Resolve(ctx.initial * 3)
+            })
+            .bind({
+                sum: (ctx) => Resolve(ctx.doubled + ctx.tripled)
+            })
+            .unwrap();
+            
+            assert.strictEqual(result.sum, 500); // (200 + 300)
+        });
+
+        it('should handle errors in mixed chains', async () => {
+            let cleanupCalled = false;
+            
+            const future = Begin<Error>()
+                .andThen(() => Bind({
+                    a: Resolve(1),
+                    b: Resolve(2)
+                }))
+                .bind({
+                    c: () => Reject(new Error('Bind failed'))
+                })
+                .finally(() => { cleanupCalled = true; });
+            
+            assert.strictEqual(await future.isErr(), true);
+            await assert.rejects(future.unwrap(), /Bind failed/);
+            assert.strictEqual(cleanupCalled, true);
         });
     });
 });

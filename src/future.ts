@@ -3,6 +3,23 @@ export type FutureType<T, E = Error> =
     | { ok: false; error: E }
 
 
+    /**
+ * Represents an asynchronous operation that can either succeed with a value of type `T` 
+ * or fail with an error of type `E`.
+ * 
+ * `Future` is a monadic wrapper around `Promise` that preserves error types and provides functional composition methods.
+ * 
+ * @typeparam T - The type of the success value.
+ * @typeparam E - The type of the error (default: `Error`).
+ * 
+ * @example
+ * ```ts
+ * const user = await Begin<ApiError>()
+ *   .andThen(() => api.getUser())
+ *   .tap(user => console.log(user))
+ *   
+ * ```
+ */
 export class Future<T, E = Error> {
     readonly [Symbol.toStringTag] = 'Future'
     
@@ -50,7 +67,7 @@ export class Future<T, E = Error> {
      * 
      * @example
      * ```ts
-     * const value = await Resolve(69).unwrap() // 69
+     * const value = await Resolve(69) // 69
      * ```
      */
     async unwrap(): Promise<T> {
@@ -125,7 +142,7 @@ export class Future<T, E = Error> {
      * @example
      * Future.of(5)
      *   .map(x => x * 2)
-     *   .unwrap() // 10
+     *    // 10
      */
     map<U>(fn: (value: T) => U) {
         const newPromise = this.Future.then(res => 
@@ -165,7 +182,7 @@ export class Future<T, E = Error> {
      * @example
      * Future.of(5)
      *   .andThen(x => Future.of(x * 2))
-     *   .unwrap() // 10
+     *    // 10
      */
     andThen<U>(fn: (value: T) => Future<U, E>): Future<U, E> {
         const newPromise = this.Future.then(async res => {
@@ -187,7 +204,7 @@ export class Future<T, E = Error> {
      * ```ts
      * const result = await Reject(new Error('fail'))
      *   .orElse(err => Resolve(0))
-     *   .unwrap() // 0
+     *    // 0
      * ```
      */
     orElse<F>(fn: (error: E) => Future<T, F>): Future<T, F> {
@@ -210,7 +227,7 @@ export class Future<T, E = Error> {
      * ```ts
      * await Resolve(69)
      *   .tap(x => console.log(x)) // logs 69
-     *   .unwrap()
+     *   
      * ```
      */
     tap(fn: (value: T) => any): Future<T, E> {
@@ -298,6 +315,53 @@ export class Future<T, E = Error> {
         return this.unwrap().catch(onrejected)
     }
 
+
+    /**
+     * Adds new fields to the context that can depend on previous fields.
+     * 
+     * @param fields - Record of functions that return Futures based on the current context
+     * @returns A new `Future` with the extended context
+     * 
+     * @example
+     * ```ts
+     * const data = await Bind({ user: api.getUser() })
+     *   .bind({
+     *     posts: ({ user }) => api.getPosts(user.id),
+     *     extra: 42
+     *   })
+     *   
+     * ```
+     */
+    bind<U extends Record<string, any>>(
+        fields: { [K in keyof U]: U[K] | Future<U[K], E> | ((ctx: T) => Future<U[K], E>) }
+    ): T extends Record<string, any> ? Future<T & U, E> : Future<U, E> {
+        
+
+        return this.andThen(ctx => {
+            const keys = Object.keys(fields) as (keyof U)[]
+            const futures = keys.map(k => {
+                const field = fields[k]
+                if (field instanceof Future) return field as Future<U[ keyof U], E>
+                if (typeof field === 'function') return field(ctx) as Future<U[keyof U], E>
+                return Resolve(field) as Future<U[keyof U], E>
+            })
+            
+            return Future.all(futures).map(values => {
+                if (typeof ctx === 'object' && ctx !== null && !Array.isArray(ctx)) {
+                    const result = {...ctx} as any
+                    keys.forEach((k,i) => result[k] = values[i])
+                    return result as T & U
+                }
+                else {
+                    const result = {} as any  
+                    keys.forEach((k,i) => result[k] = values[i])
+                    return result as U
+                } 
+            })
+        }) as any
+    }
+
+
     /**
      * Creates a `Future` from a value, Promise, or function.
      * 
@@ -341,14 +405,13 @@ export class Future<T, E = Error> {
      * 
      * @example
      * ```ts
-     * const [user, posts] = await Future.all([api.getUser(), api.getPosts()]).unwrap()
+     * const [user, posts] = await Future.all([api.getUser(), api.getPosts()])
      * ```
      */
-    static all<T, E>(futures: NoInfer<Future<T, E>>[]): Future<T[], E> {
-        return Future.Begin<E>()
+    static all<T, E>(futures: Future<T, E>[]): Future<T[], E> {
+        return Begin<E>()
             .andThen(() => {
-                const promises = futures.map(f => f.unwrap())
-                return Future.of(Promise.all(promises))
+                return Future.of(Promise.all(futures))
             })
     }
 
@@ -361,13 +424,13 @@ export class Future<T, E = Error> {
      * 
      * @example
      * ```ts
-     * const data = await Future.any([api.getCache(), api.getServer()]).unwrap()
+     * const data = await Future.any([api.getCache(), api.getServer()])
      * ```
      */
     static any<T, E>(futures: NoInfer<Future<T, E>>[]): Future<T, E> {
-        return Future.Begin<E>()
+        return Begin<E>()
             .andThen(() => {
-                const promises = futures.map(f => f.unwrap())
+                const promises = futures.map(f => f)
                 return Future.of(Promise.any(promises))
             })
     }
@@ -381,13 +444,13 @@ export class Future<T, E = Error> {
      * 
      * @example
      * ```ts
-     * const result = await Future.race([slow(), fast()]).unwrap()
+     * const result = await Future.race([slow(), fast()])
      * ```
      */
-    static race<T, E>(futures: NoInfer<Future<T, E>>[]): Future<T, E> {
-        return Future.Begin<E>()
+    static race<T, E>(futures: Future<T, E>[]): Future<T, E> {
+        return Begin<E>()
             .andThen(() => {
-                const promises = futures.map(f => f.unwrap())
+                const promises = futures.map(f => f)
                 return Future.of(Promise.race(promises))
             })
     }    
@@ -403,7 +466,7 @@ export class Future<T, E = Error> {
      * ```ts
      * await Future.of(() => api.call())
      *   .finally(() => setIsLoading(false))
-     *   .unwrap()
+     *   
      * ```
      */
     finally(fn: () => any | Promise<any>): Future<T, E> {
@@ -411,21 +474,6 @@ export class Future<T, E = Error> {
             await fn()
             return res
         }))
-    }
-
-    /**
-     * Starts a void `Future` chain.
-     * Use when you don't have an initial value but need error handling.
-     * 
-     * @returns A void `Future`
-     * 
-     * @example
-     * Future.Begin<ApiError>()
-     *   .andThen(() => api.getUser())
-     *   .unwrap()
-     */
-    static Begin<E = Error>(): Future<void, E> {
-        return Resolve<undefined, E>(undefined)
     }
 }
 
@@ -467,4 +515,54 @@ export function Resolve<T, E = Error>(value?: T | Promise<T>): Future<T | void, 
 export const Reject = <E, T = never>(error: E | Promise<E>): Future<T, E> => {
     const promise = Promise.resolve(error).then(e => ({ ok: false, error: e } as const))
     return new Future(promise)
+}
+
+
+/**
+     * Starts a void `Future` chain.
+     * Use when you don't have an initial value but need error handling.
+     * 
+     * @returns A void `Future`
+     * 
+     * @example
+     * Begin<ApiError>()
+     *   .andThen(() => api.getUser())
+     *   
+     */
+export const Begin = <E = Error>(): Future<void, E> => {
+    return Resolve<undefined, E>(undefined)
+}
+
+
+/**
+ * Creates a new `Future` context from a record of independent Futures.
+ * 
+ * @param fields - Record of values to combine
+ * @returns A `Future` that resolves to an object with all values
+ * 
+ * @example
+ * ```ts
+ * const data = await Bind({
+ *   user: api.getUser(),
+ *   posts: api.getPosts(),
+ *   extra: 42,
+ * })
+ * // data: { user: User, posts: Post[], extra: number }
+ * ```
+ */
+export const Bind = <T extends Record<string, any>, E = Error>(
+    fields: { [K in keyof T]: T[K] | Future<T[K], E> }
+): Future<T, E> => {
+    const keys = Object.keys(fields) as (keyof T)[]
+    const futures = keys.map(k => {
+        const field = fields[k]
+        if (field instanceof Future) return field as Future<T[keyof T], E>
+        return Resolve(field) as Future<T[keyof T], E>
+    })
+    
+    return Future.all(futures).map(values => {
+        const result = {} as T
+        keys.forEach((k, i) => result[k] = values[i])
+        return result
+    })
 }
